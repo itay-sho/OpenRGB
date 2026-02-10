@@ -57,20 +57,20 @@ bool TestForCorsairVengeanceProController(i2c_smbus_interface* bus, unsigned cha
     return(pass);
 }
 
-DetectedControllers DetectCorsairVengeanceProControllers(std::vector<i2c_smbus_interface*> &busses)
+DetectedControllers DetectCorsairVengeanceProControllers(std::vector<i2c_smbus_interface*> &buses)
 {
     DetectedControllers detected_controllers;
-    for(unsigned int bus = 0; bus < busses.size(); bus++)
+    for(unsigned int bus = 0; bus < buses.size(); bus++)
     {
         LOG_DEBUG("[%s] Testing bus %d", CORSAIR_VENGEANCE_RGB_PRO_NAME, bus);
 
-        IF_DRAM_SMBUS(busses[bus]->pci_vendor, busses[bus]->pci_device)
+        IF_DRAM_SMBUS(buses[bus]->pci_vendor, buses[bus]->pci_device)
         {
             for(unsigned char addr = 0x58; addr <= 0x5F; addr++)
             {
-                if(TestForCorsairVengeanceProController(busses[bus], addr))
+                if(TestForCorsairVengeanceProController(buses[bus], addr))
                 {
-                    CorsairVengeanceProController*     controller     = new CorsairVengeanceProController(busses[bus], addr);
+                    CorsairVengeanceProController*     controller     = new CorsairVengeanceProController(buses[bus], addr);
                     RGBController_CorsairVengeancePro* rgb_controller = new RGBController_CorsairVengeancePro(controller);
 
                     detected_controllers.push_back(rgb_controller);

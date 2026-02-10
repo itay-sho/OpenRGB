@@ -93,7 +93,7 @@ bool TestForCorsairDominatorPlatinumController(i2c_smbus_interface *bus, unsigne
     return true;
 }
 
-DetectedControllers DetectCorsairDominatorPlatinumControllers(std::vector<i2c_smbus_interface *> &busses)
+DetectedControllers DetectCorsairDominatorPlatinumControllers(std::vector<i2c_smbus_interface *> &buses)
 {
     DetectedControllers detected_controllers;
     SettingsManager*    settings_manager            = ResourceManager::get()->GetSettingsManager();
@@ -109,9 +109,9 @@ DetectedControllers DetectCorsairDominatorPlatinumControllers(std::vector<i2c_sm
 
     std::string model = corsair_dominator_settings["model"];
 
-    for(unsigned int bus = 0; bus < busses.size(); bus++)
+    for(unsigned int bus = 0; bus < buses.size(); bus++)
     {
-        IF_DRAM_SMBUS(busses[bus]->pci_vendor, busses[bus]->pci_device)
+        IF_DRAM_SMBUS(buses[bus]->pci_vendor, buses[bus]->pci_device)
         {
             LOG_DEBUG("[%s] Testing bus %d", CORSAIR_DOMINATOR_PLATINUM_NAME, bus);
 
@@ -129,7 +129,7 @@ DetectedControllers DetectCorsairDominatorPlatinumControllers(std::vector<i2c_sm
 
             for(unsigned char addr : addresses)
             {
-                if(TestForCorsairDominatorPlatinumController(busses[bus], addr))
+                if(TestForCorsairDominatorPlatinumController(buses[bus], addr))
                 {
                     unsigned int leds;
                     std::string name;
@@ -147,7 +147,7 @@ DetectedControllers DetectCorsairDominatorPlatinumControllers(std::vector<i2c_sm
 
                     LOG_DEBUG("[%s] Model: %s, Leds: %d", CORSAIR_DOMINATOR_PLATINUM_NAME, name.c_str(), leds);
 
-                    CorsairDominatorPlatinumController*     controller     = new CorsairDominatorPlatinumController(busses[bus], addr, leds, name);
+                    CorsairDominatorPlatinumController*     controller     = new CorsairDominatorPlatinumController(buses[bus], addr, leds, name);
                     RGBController_CorsairDominatorPlatinum* rgb_controller = new RGBController_CorsairDominatorPlatinum(controller);
 
                     detected_controllers.push_back(rgb_controller);
