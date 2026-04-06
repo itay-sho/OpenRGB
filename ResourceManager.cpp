@@ -135,6 +135,9 @@ ResourceManager::ResourceManager()
     detection_enabled           = true;
     init_finished               = false;
     plugin_manager              = NULL;
+    server                      = NULL;
+    server_host                 = "";
+    server_port                 = 0;
 
     SetupConfigurationDirectory();
 
@@ -151,43 +154,9 @@ ResourceManager::ResourceManager()
     LogManager::get()->configure(settings_manager->GetSettings("LogManager"), GetConfigurationDirectory());
 
     /*-----------------------------------------------------*\
-    | Initialize Server Instance                            |
-    |   If configured, pass through full controller list    |
-    |   including clients.  Otherwise, pass only local      |
-    |   hardware controllers                                |
-    \*-----------------------------------------------------*/
-    json server_settings    = settings_manager->GetSettings("Server");
-    bool legacy_workaround  = false;
-
-    server                  = new NetworkServer();
-
-    /*-----------------------------------------------------*\
-    | Set server name                                       |
-    \*-----------------------------------------------------*/
-    std::string titleString = "OpenRGB ";
-    titleString.append(VERSION_STRING);
-
-    server->SetName(titleString);
-    server->SetSettingsManager(settings_manager);
-
-    /*-----------------------------------------------------*\
-    | Enable legacy SDK workaround in server if configured  |
-    \*-----------------------------------------------------*/
-    if(server_settings.contains("legacy_workaround"))
-    {
-        legacy_workaround   = server_settings["legacy_workaround"];
-    }
-
-    if(legacy_workaround)
-    {
-        server->SetLegacyWorkaroundEnable(true);
-    }
-
-    /*-----------------------------------------------------*\
     | Load sizes list from file                             |
     \*-----------------------------------------------------*/
     profile_manager         = new ProfileManager(GetConfigurationDirectory());
-    server->SetProfileManager(profile_manager);
 }
 
 ResourceManager::~ResourceManager()
@@ -269,7 +238,21 @@ void ResourceManager::SetConfigurationDirectory(const filesystem::path &director
 void ResourceManager::SetPluginManager(PluginManagerInterface* plugin_manager_ptr)
 {
     plugin_manager = plugin_manager_ptr;
-    server->SetPluginManager(plugin_manager);
+
+    if(server)
+    {
+        server->SetPluginManager(plugin_manager);
+    }
+}
+
+void ResourceManager::SetServerHost(std::string new_server_host)
+{
+    server_host = new_server_host;
+}
+
+void ResourceManager::SetServerPort(unsigned short new_server_port)
+{
+    server_port = new_server_port;
 }
 
 /*---------------------------------------------------------*\
@@ -494,21 +477,24 @@ void ResourceManager::UpdateDeviceList()
     /*-----------------------------------------------------*\
     | Update server list                                    |
     \*-----------------------------------------------------*/
-    json server_settings    = settings_manager->GetSettings("Server");
-    bool all_controllers    = false;
+    if(server)
+    {
+        json server_settings    = settings_manager->GetSettings("Server");
+        bool all_controllers    = false;
 
-    if(server_settings.contains("all_controllers"))
-    {
-        all_controllers     = server_settings["all_controllers"];
-    }
+        if(server_settings.contains("all_controllers"))
+        {
+            all_controllers     = server_settings["all_controllers"];
+        }
 
-    if(all_controllers)
-    {
-        server->SetControllers(rgb_controllers);
-    }
-    else
-    {
-        server->SetControllers(rgb_controllers_hw);
+        if(all_controllers)
+        {
+            server->SetControllers(rgb_controllers);
+        }
+        else
+        {
+            server->SetControllers(rgb_controllers_hw);
+        }
     }
 
     /*-----------------------------------------------------*\
@@ -532,7 +518,10 @@ void ResourceManager::WaitForDetection()
 \*---------------------------------------------------------*/
 void ResourceManager::SignalResourceManagerUpdate(unsigned int update_reason)
 {
-    server->SignalResourceManagerUpdate(update_reason);
+    if(server)
+    {
+        server->SignalResourceManagerUpdate(update_reason);
+    }
 
     ResourceManagerCallbackMutex.lock();
 
@@ -729,8 +718,9 @@ void ResourceManager::Initialize(bool tryConnect, bool detectDevices, bool start
     \*-----------------------------------------------------*/
     if(start_server)
     {
-        GetServer()->StartServer();
-        if(!GetServer()->GetOnline())
+        InitializeServer();
+        server->StartServer();
+        if(!server->GetOnline())
         {
             LOG_DEBUG("[%s] Server failed to start", RESOURCEMANAGER);
         }
@@ -758,6 +748,80 @@ void ResourceManager::Initialize(bool tryConnect, bool detectDevices, bool start
     }
 
     init_finished = true;
+}
+
+void ResourceManager::InitializeServer()
+{
+    /*-----------------------------------------------------*\
+    | Initialize Server Instance                            |
+    |   If configured, pass through full controller list    |
+    |   including clients.  Otherwise, pass only local      |
+    |   hardware controllers                                |
+    \*-----------------------------------------------------*/
+    json server_settings    = settings_manager->GetSettings("Server");
+    bool legacy_workaround  = false;
+
+    server                  = new NetworkServer();
+
+    /*-----------------------------------------------------*\
+    | Set server name                                       |
+    \*-----------------------------------------------------*/
+    std::string titleString = "OpenRGB ";
+    titleString.append(VERSION_STRING);
+
+    server->SetName(titleString);
+    server->SetSettingsManager(settings_manager);
+
+    /*-----------------------------------------------------*\
+    | Enable legacy SDK workaround in server if configured  |
+    \*-----------------------------------------------------*/
+    if(server_settings.contains("legacy_workaround"))
+    {
+        legacy_workaround   = server_settings["legacy_workaround"];
+    }
+
+    if(legacy_workaround)
+    {
+        server->SetLegacyWorkaroundEnable(true);
+    }
+
+    server->SetProfileManager(profile_manager);
+
+    if(plugin_manager)
+    {
+        server->SetPluginManager(plugin_manager);
+    }
+
+    /*-----------------------------------------------------*\
+    | If the server host and port have been set on the CLI, |
+    | use those values.  Otherwise, get default server host |
+    | and port from settings if configured.                 |
+    \*-----------------------------------------------------*/
+    if(server_host == "")
+    {
+        if(server_settings.contains("default_host"))
+        {
+            std::string default_host = server_settings["default_host"];
+            server->SetHost(default_host);
+        }
+    }
+    else
+    {
+        server->SetHost(server_host);
+    }
+
+    if(server_port == 0)
+    {
+        if(server_settings.contains("default_port"))
+        {
+            unsigned short default_port = server_settings["default_port"];
+            server->SetPort(default_port);
+        }
+    }
+    else
+    {
+        server->SetPort(server_port);
+    }
 }
 
 void ResourceManager::WaitForInitialization()

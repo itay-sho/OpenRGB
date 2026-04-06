@@ -364,7 +364,7 @@ OpenRGBDialog::OpenRGBDialog(QWidget *parent) : QMainWindow(parent), ui(new Ui::
     /*-----------------------------------------------------*\
     | Add Server Tab                                        |
     \*-----------------------------------------------------*/
-    AddServerTab();
+    //AddServerTab();
 
     /*-----------------------------------------------------*\
     | Add the Software Info page                            |

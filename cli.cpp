@@ -1408,14 +1408,14 @@ unsigned int cli_pre_detection(int argc, char* argv[])
         \*---------------------------------------------------------*/
         else if(option == "--server-port")
         {
-            if (argument != "")
+            if(argument != "")
             {
                 try
                 {
                     int port = std::stoi(argument);
-                    if (port >= 1024 && port <= 65535)
+                    if(port >= 1024 && port <= 65535)
                     {
-                        server_port  = port;
+                        ResourceManager::get()->SetServerPort(port);
                         server_start = true;
                     }
                     else
@@ -1446,11 +1446,9 @@ unsigned int cli_pre_detection(int argc, char* argv[])
         \*---------------------------------------------------------*/
         else if(option == "--server-host")
         {
-            if (argument != "")
+            if(argument != "")
             {
-                std::string host = argument;
-
-                server_host  = host;
+                ResourceManager::get()->SetServerHost(argument);
                 server_start = true;
             }
             else
@@ -1694,9 +1692,6 @@ unsigned int cli_pre_detection(int argc, char* argv[])
 
     if(server_start)
     {
-        NetworkServer * server = ResourceManager::get()->GetServer();
-        server->SetHost(server_host);
-        server->SetPort(server_port);
         ret_flags |= RET_FLAG_START_SERVER;
     }
 

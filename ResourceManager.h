@@ -62,6 +62,8 @@ public:
 
     void                                SetConfigurationDirectory(const filesystem::path &directory);
     void                                SetPluginManager(PluginManagerInterface* plugin_manager_ptr);
+    void                                SetServerHost(std::string server_host);
+    void                                SetServerPort(unsigned short server_port);
 
     /*-----------------------------------------------------*\
     | Network Client Registration                           |
@@ -99,6 +101,7 @@ public:
     void                                SignalResourceManagerUpdate(unsigned int update_reason);
 
     void                                Initialize(bool tryConnect, bool detectDevices, bool startServer, bool applyPostOptions);
+    void                                InitializeServer();
 
     void                                WaitForInitialization();
 
@@ -170,6 +173,8 @@ private:
     | Network Server                                        |
     \*-----------------------------------------------------*/
     NetworkServer*                              server;
+    std::string                                 server_host;
+    unsigned short                              server_port;
 
     /*-----------------------------------------------------*\
     | Network Clients                                       |
