@@ -182,6 +182,7 @@ HEADERS +=                                                                      
     ProfileManager.h                                                                            \
     ResourceManager.h                                                                           \
     ResourceManagerInterface.h                                                                  \
+    USBHotplugMonitor.h                                                                         \
     SettingsManager.h                                                                           \
     Detector.h                                                                                  \
     DeviceDetector.h                                                                            \
@@ -252,6 +253,7 @@ SOURCES +=                                                                      
     PluginManager.cpp                                                                           \
     ProfileManager.cpp                                                                          \
     ResourceManager.cpp                                                                         \
+    USBHotplugMonitor.cpp                                                                       \
     SPDAccessor/DDR4DirectAccessor.cpp                                                          \
     SPDAccessor/DDR5DirectAccessor.cpp                                                          \
     SPDAccessor/SPDAccessor.cpp                                                                 \

@@ -29,6 +29,8 @@
 #include "NetworkServer.h"
 #include "filesystem.h"
 #include "StringUtils.h"
+#include "USBHotplugMonitor.h"
+#include "RGBController.h"
 
 /*---------------------------------------------------------*\
 | Translation Strings                                       |
@@ -126,6 +128,7 @@ ResourceManager::ResourceManager()
     init_finished               = false;
     initial_detection           = true;
     background_thread_running   = true;
+    hotplug_monitor             = nullptr;
 
     /*-----------------------------------------------------*\
     | Start the background detection thread in advance; it  |
@@ -194,6 +197,13 @@ ResourceManager::ResourceManager()
 
 ResourceManager::~ResourceManager()
 {
+    if(hotplug_monitor)
+    {
+        hotplug_monitor->Stop();
+        delete hotplug_monitor;
+        hotplug_monitor = nullptr;
+    }
+
     Cleanup();
 
     /*-----------------------------------------------------*\
@@ -884,7 +894,14 @@ void ResourceManager::Cleanup()
         delete bus;
     }
 
-    RunInBackgroundThread(std::bind(&ResourceManager::HidExitCoroutine, this));
+    /*-----------------------------------------------------*\
+    | Only call hid_exit if hotplug monitor is not active    |
+    | Hotplug needs HID to stay initialized                  |
+    \*-----------------------------------------------------*/
+    if(!hotplug_monitor || !hotplug_monitor->IsRunning())
+    {
+        RunInBackgroundThread(std::bind(&ResourceManager::HidExitCoroutine, this));
+    }
 }
 
 void ResourceManager::ProcessPreDetectionHooks()
@@ -1041,6 +1058,23 @@ void ResourceManager::ProcessPostDetection()
     }
 
     detection_is_required = false;
+
+    /*-----------------------------------------------------*\
+    | Start USB hotplug monitor after first detection        |
+    \*-----------------------------------------------------*/
+    if(!hotplug_monitor)
+    {
+        hotplug_monitor = new USBHotplugMonitor(this);
+        if(hotplug_monitor->IsSupported())
+        {
+            hotplug_monitor->Start();
+            LOG_INFO("[ResourceManager] USB hotplug monitor started");
+        }
+        else
+        {
+            LOG_INFO("[ResourceManager] USB hotplug not supported on this platform");
+        }
+    }
 
     LOG_INFO("------------------------------------------------------");
     LOG_INFO("|                Detection completed                 |");
@@ -1397,7 +1431,13 @@ void ResourceManager::DetectDevicesCoroutine()
                     {
                         DetectionProgressChanged();
 
+                        std::size_t prev_hw_size = rgb_controllers_hw.size();
                         detector.function(current_hid_device, hid_device_detectors[hid_detector_idx].name);
+                        for(std::size_t new_idx = prev_hw_size; new_idx < rgb_controllers_hw.size(); new_idx++)
+                        {
+                            rgb_controllers_hw[new_idx]->vid = current_hid_device->vendor_id;
+                            rgb_controllers_hw[new_idx]->pid = current_hid_device->product_id;
+                        }
 
                         LOG_TRACE("[%s] detection end", detection_string);
                     }
@@ -1455,7 +1495,13 @@ void ResourceManager::DetectDevicesCoroutine()
                     {
                         DetectionProgressChanged();
 
+                        std::size_t prev_hw_size = rgb_controllers_hw.size();
                         detector.function(current_hid_device, hid_device_detectors[hid_detector_idx].name);
+                        for(std::size_t new_idx = prev_hw_size; new_idx < rgb_controllers_hw.size(); new_idx++)
+                        {
+                            rgb_controllers_hw[new_idx]->vid = current_hid_device->vendor_id;
+                            rgb_controllers_hw[new_idx]->pid = current_hid_device->product_id;
+                        }
                     }
                 }
             }
@@ -1488,7 +1534,13 @@ void ResourceManager::DetectDevicesCoroutine()
                     {
                         DetectionProgressChanged();
 
+                        std::size_t prev_hw_size = rgb_controllers_hw.size();
                         detector.function(default_wrapper, current_hid_device, hid_wrapped_device_detectors[hid_detector_idx].name);
+                        for(std::size_t new_idx = prev_hw_size; new_idx < rgb_controllers_hw.size(); new_idx++)
+                        {
+                            rgb_controllers_hw[new_idx]->vid = current_hid_device->vendor_id;
+                            rgb_controllers_hw[new_idx]->pid = current_hid_device->product_id;
+                        }
                     }
                 }
             }
@@ -1880,11 +1932,7 @@ void ResourceManager::RunInBackgroundThread(std::function<void()> coroutine)
     else
     {
         BackgroundThreadStateMutex.lock();
-        if(ScheduledBackgroundFunction != nullptr)
-        {
-            LOG_WARNING("[ResourceManager] Detection coroutine: assigned a new coroutine when one was already scheduled - probably two rescan events sent at once");
-        }
-        ScheduledBackgroundFunction = coroutine;
+        BackgroundFunctionQueue.push(coroutine);
         BackgroundThreadStateMutex.unlock();
         BackgroundFunctionStartTrigger.notify_one();
     }
@@ -1912,10 +1960,16 @@ void ResourceManager::BackgroundThreadFunction()
     std::unique_lock lock(BackgroundThreadStateMutex);
     while(background_thread_running)
     {
-        if(ScheduledBackgroundFunction)
+        while(!BackgroundFunctionQueue.empty())
         {
-            std::function<void()> coroutine = nullptr;
-            std::swap(ScheduledBackgroundFunction, coroutine);
+            std::function<void()> coroutine = BackgroundFunctionQueue.front();
+            BackgroundFunctionQueue.pop();
+
+            /*-------------------------------------------------*\
+            | Unlock while running the coroutine so new work    |
+            | can be queued                                     |
+            \*-------------------------------------------------*/
+            lock.unlock();
             try
             {
                 coroutine();
@@ -1928,6 +1982,7 @@ void ResourceManager::BackgroundThreadFunction()
             {
                 LOG_ERROR("[ResourceManager] Unhandled exception in coroutine");
             }
+            lock.lock();
         }
         /*-------------------------------------------------*\
         | This line will cause the thread to suspend until  |
@@ -2088,4 +2143,260 @@ bool ResourceManager::IsAnyDimmDetectorEnabled(json &detector_settings)
         }
     }
     return false;
+}
+
+/*---------------------------------------------------------*\
+| USB Hotplug Support Methods                               |
+\*---------------------------------------------------------*/
+
+std::vector<HIDDeviceDetectorBlock>& ResourceManager::GetHIDDeviceDetectors()
+{
+    return hid_device_detectors;
+}
+
+std::vector<HIDWrappedDeviceDetectorBlock>& ResourceManager::GetHIDWrappedDeviceDetectors()
+{
+    return hid_wrapped_device_detectors;
+}
+
+void ResourceManager::CacheDeviceState(RGBController* ctrl)
+{
+    DeviceIdentityKey key;
+    key.type        = ctrl->type;
+    key.name        = ctrl->name;
+    key.description = ctrl->description;
+    key.version     = ctrl->version;
+    key.serial      = ctrl->serial;
+
+    CachedDeviceState state;
+    state.active_mode   = ctrl->active_mode;
+    state.colors        = ctrl->colors;
+    state.cached_at     = std::chrono::steady_clock::now();
+
+    /*-----------------------------------------------------*\
+    | Cache the active mode's settings if valid              |
+    \*-----------------------------------------------------*/
+    if(ctrl->active_mode >= 0 && ctrl->active_mode < (int)ctrl->modes.size())
+    {
+        state.mode_value      = ctrl->modes[ctrl->active_mode].value;
+        state.mode_speed      = ctrl->modes[ctrl->active_mode].speed;
+        state.mode_brightness = ctrl->modes[ctrl->active_mode].brightness;
+        state.mode_direction  = ctrl->modes[ctrl->active_mode].direction;
+        state.mode_color_mode = ctrl->modes[ctrl->active_mode].color_mode;
+        state.mode_colors     = ctrl->modes[ctrl->active_mode].colors;
+        state.has_mode        = true;
+    }
+    else
+    {
+        state.has_mode = false;
+    }
+
+    std::lock_guard<std::mutex> lock(DeviceStateCacheMutex);
+    device_state_cache[key] = std::move(state);
+
+    LOG_INFO("[ResourceManager] Cached state for device: %s", ctrl->name.c_str());
+}
+
+bool ResourceManager::RestoreDeviceState(RGBController* ctrl)
+{
+    DeviceIdentityKey key;
+    key.type        = ctrl->type;
+    key.name        = ctrl->name;
+    key.description = ctrl->description;
+    key.version     = ctrl->version;
+    key.serial      = ctrl->serial;
+
+    std::lock_guard<std::mutex> lock(DeviceStateCacheMutex);
+
+    auto it = device_state_cache.find(key);
+    if(it == device_state_cache.end())
+    {
+        return false;
+    }
+
+    /*-----------------------------------------------------*\
+    | Check cache expiry (30 minutes)                       |
+    \*-----------------------------------------------------*/
+    auto age = std::chrono::steady_clock::now() - it->second.cached_at;
+    if(age > std::chrono::minutes(30))
+    {
+        device_state_cache.erase(it);
+        return false;
+    }
+
+    LOG_INFO("[ResourceManager] Restoring cached state for device: %s", ctrl->name.c_str());
+
+    CachedDeviceState& state = it->second;
+
+    /*-----------------------------------------------------*\
+    | Restore per-LED colors if the count matches            |
+    \*-----------------------------------------------------*/
+    if(state.colors.size() == ctrl->colors.size())
+    {
+        ctrl->colors = state.colors;
+    }
+    else
+    {
+        LOG_WARNING("[ResourceManager] Color count mismatch (%zu cached vs %zu current), skipping color restore",
+                    state.colors.size(), ctrl->colors.size());
+    }
+
+    /*-----------------------------------------------------*\
+    | Restore active mode and its settings                   |
+    \*-----------------------------------------------------*/
+    if(state.has_mode
+       && state.active_mode >= 0
+       && state.active_mode < (int)ctrl->modes.size())
+    {
+        ctrl->active_mode = state.active_mode;
+        mode& m = ctrl->modes[ctrl->active_mode];
+
+        m.value      = state.mode_value;
+        m.speed      = state.mode_speed;
+        m.brightness = state.mode_brightness;
+        m.direction  = state.mode_direction;
+        m.color_mode = state.mode_color_mode;
+
+        if(state.mode_colors.size() == m.colors.size())
+        {
+            m.colors = state.mode_colors;
+        }
+
+        ctrl->UpdateMode();
+    }
+
+    ctrl->UpdateLEDs();
+
+    device_state_cache.erase(it);
+    return true;
+}
+
+void ResourceManager::RemoveDevicesByVidPid(uint16_t vid, uint16_t pid)
+{
+    DetectDeviceMutex.lock();
+
+    LOG_INFO("[ResourceManager] Removing devices with VID:PID %04X:%04X", vid, pid);
+
+    /*-----------------------------------------------------*\
+    | Collect controllers to remove                          |
+    \*-----------------------------------------------------*/
+    std::vector<RGBController*> to_remove;
+
+    for(RGBController* ctrl : rgb_controllers_hw)
+    {
+        if(ctrl->vid == vid && ctrl->pid == pid)
+        {
+            to_remove.push_back(ctrl);
+        }
+    }
+
+    for(RGBController* ctrl : to_remove)
+    {
+        CacheDeviceState(ctrl);
+        UnregisterRGBController(ctrl);
+        delete ctrl;
+    }
+
+    if(!to_remove.empty())
+    {
+        LOG_INFO("[ResourceManager] Removed %zu controller(s) for VID:PID %04X:%04X", to_remove.size(), vid, pid);
+    }
+
+    DetectDeviceMutex.unlock();
+}
+
+void ResourceManager::TargetedDetectDevices(uint16_t vid, uint16_t pid)
+{
+    DetectDeviceMutex.lock();
+
+    LOG_INFO("[ResourceManager] Targeted detection for VID:PID %04X:%04X", vid, pid);
+
+    /*-----------------------------------------------------*\
+    | Load detector settings                                 |
+    \*-----------------------------------------------------*/
+    json detector_settings = settings_manager->GetSettings("Detectors");
+
+    /*-----------------------------------------------------*\
+    | Enumerate only HID devices matching this VID/PID       |
+    \*-----------------------------------------------------*/
+    hid_device_info* hid_devices = hid_enumerate(vid, pid);
+    hid_device_info* current_hid_device = hid_devices;
+
+    while(current_hid_device)
+    {
+        /*-------------------------------------------------*\
+        | Test against all registered HID detectors          |
+        \*-------------------------------------------------*/
+        for(unsigned int idx = 0; idx < (unsigned int)hid_device_detectors.size(); idx++)
+        {
+            HIDDeviceDetectorBlock& detector = hid_device_detectors[idx];
+
+            if(detector.compare(current_hid_device))
+            {
+                bool this_device_enabled = true;
+                if(detector_settings.contains("detectors") && detector_settings["detectors"].contains(detector.name))
+                {
+                    this_device_enabled = detector_settings["detectors"][detector.name];
+                }
+
+                if(this_device_enabled)
+                {
+                    std::size_t prev_hw_size = rgb_controllers_hw.size();
+                    detector.function(current_hid_device, detector.name);
+                    for(std::size_t new_idx = prev_hw_size; new_idx < rgb_controllers_hw.size(); new_idx++)
+                    {
+                        rgb_controllers_hw[new_idx]->vid = current_hid_device->vendor_id;
+                        rgb_controllers_hw[new_idx]->pid = current_hid_device->product_id;
+                    }
+                }
+            }
+        }
+
+        /*-------------------------------------------------*\
+        | Test against all registered wrapped HID detectors  |
+        \*-------------------------------------------------*/
+        for(unsigned int idx = 0; idx < (unsigned int)hid_wrapped_device_detectors.size(); idx++)
+        {
+            HIDWrappedDeviceDetectorBlock& detector = hid_wrapped_device_detectors[idx];
+
+            if(detector.compare(current_hid_device))
+            {
+                bool this_device_enabled = true;
+                if(detector_settings.contains("detectors") && detector_settings["detectors"].contains(detector.name))
+                {
+                    this_device_enabled = detector_settings["detectors"][detector.name];
+                }
+
+                if(this_device_enabled)
+                {
+                    std::size_t prev_hw_size = rgb_controllers_hw.size();
+                    detector.function(default_wrapper, current_hid_device, detector.name);
+                    for(std::size_t new_idx = prev_hw_size; new_idx < rgb_controllers_hw.size(); new_idx++)
+                    {
+                        rgb_controllers_hw[new_idx]->vid = current_hid_device->vendor_id;
+                        rgb_controllers_hw[new_idx]->pid = current_hid_device->product_id;
+                    }
+                }
+            }
+        }
+
+        current_hid_device = current_hid_device->next;
+    }
+
+    hid_free_enumeration(hid_devices);
+
+    /*-----------------------------------------------------*\
+    | Restore cached state for any newly detected devices    |
+    \*-----------------------------------------------------*/
+    for(RGBController* ctrl : rgb_controllers_hw)
+    {
+        if(ctrl->vid == vid && ctrl->pid == pid)
+        {
+            RestoreDeviceState(ctrl);
+        }
+    }
+
+    DetectDeviceMutex.unlock();
+
+    LOG_INFO("[ResourceManager] Targeted detection complete for VID:PID %04X:%04X", vid, pid);
 }

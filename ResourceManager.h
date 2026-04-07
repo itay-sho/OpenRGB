@@ -19,6 +19,9 @@
 #include <thread>
 #include <string>
 #include <vector>
+#include <queue>
+#include <unordered_map>
+#include <chrono>
 #include "SPDWrapper.h"
 #include "hidapi_wrapper.h"
 #include "i2c_smbus.h"
@@ -38,6 +41,55 @@ class NetworkServer;
 class ProfileManager;
 class RGBController;
 class SettingsManager;
+class USBHotplugMonitor;
+
+/*---------------------------------------------------------*\
+| Device identity key for matching across reconnections     |
+\*---------------------------------------------------------*/
+struct DeviceIdentityKey
+{
+    int             type;
+    std::string     name;
+    std::string     description;
+    std::string     version;
+    std::string     serial;
+
+    bool operator==(const DeviceIdentityKey& other) const
+    {
+        return type        == other.type
+            && name        == other.name
+            && description == other.description
+            && version     == other.version
+            && serial      == other.serial;
+    }
+};
+
+struct DeviceIdentityKeyHash
+{
+    std::size_t operator()(const DeviceIdentityKey& k) const
+    {
+        std::size_t h = std::hash<int>()(k.type);
+        h ^= std::hash<std::string>()(k.name)        + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<std::string>()(k.description)  + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<std::string>()(k.version)      + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<std::string>()(k.serial)       + 0x9e3779b9 + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct CachedDeviceState
+{
+    int                                         active_mode;
+    std::vector<unsigned int>                   colors;
+    bool                                        has_mode;
+    int                                         mode_value;
+    unsigned int                                mode_speed;
+    unsigned int                                mode_brightness;
+    unsigned int                                mode_direction;
+    unsigned int                                mode_color_mode;
+    std::vector<unsigned int>                   mode_colors;
+    std::chrono::steady_clock::time_point       cached_at;
+};
 
 typedef std::function<bool()>                                                                       I2CBusDetectorFunction;
 typedef std::function<void()>                                                                       DeviceDetectorFunction;
@@ -195,6 +247,19 @@ public:
     void WaitForInitialization();
     void WaitForDeviceDetection();
 
+    /*---------------------------------------------------------*\
+    | USB Hotplug support                                       |
+    \*---------------------------------------------------------*/
+    void TargetedDetectDevices(uint16_t vid, uint16_t pid);
+    void RemoveDevicesByVidPid(uint16_t vid, uint16_t pid);
+    void CacheDeviceState(RGBController* ctrl);
+    bool RestoreDeviceState(RGBController* ctrl);
+
+    std::vector<HIDDeviceDetectorBlock>&        GetHIDDeviceDetectors();
+    std::vector<HIDWrappedDeviceDetectorBlock>&  GetHIDWrappedDeviceDetectors();
+
+    void RunInBackgroundThread(std::function<void()>);
+
 private:
     void UpdateDetectorSettings();
     void SetupConfigurationDirectory();
@@ -202,7 +267,6 @@ private:
     bool ProcessPreDetection();
     void ProcessPostDetection();
     bool IsAnyDimmDetectorEnabled(json &detector_settings);
-    void RunInBackgroundThread(std::function<void()>);
     void BackgroundThreadFunction();
 
     /*-----------------------------------------------------*\
@@ -314,7 +378,7 @@ private:
     \*-----------------------------------------------------*/
     std::thread *                               DetectDevicesThread;
     std::mutex                                  DetectDeviceMutex;
-    std::function<void()>                       ScheduledBackgroundFunction;
+    std::queue<std::function<void()>>           BackgroundFunctionQueue;
     std::mutex                                  BackgroundThreadStateMutex;
 
     /*-----------------------------------------------------*\
@@ -366,4 +430,12 @@ private:
     | OpenRGB configuration directory path                  |
     \*-----------------------------------------------------*/
     filesystem::path                            config_dir;
+
+    /*-----------------------------------------------------*\
+    | USB Hotplug Monitor and Device State Cache             |
+    \*-----------------------------------------------------*/
+    USBHotplugMonitor*                          hotplug_monitor;
+    std::mutex                                  DeviceStateCacheMutex;
+    std::unordered_map<DeviceIdentityKey, CachedDeviceState, DeviceIdentityKeyHash>
+                                                device_state_cache;
 };
