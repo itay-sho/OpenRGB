@@ -327,6 +327,8 @@ public:
     std::vector<mode>       modes;          /* Modes                    */
     std::vector<RGBColor>   colors;         /* Color buffer             */
     device_type             type;           /* device type              */
+    uint16_t                vid = 0;        /* USB vendor ID            */
+    uint16_t                pid = 0;        /* USB product ID           */
     int                     active_mode = 0;/* active mode              */
     std::vector<std::string>
                             led_alt_names;  /* alternate LED names      */
